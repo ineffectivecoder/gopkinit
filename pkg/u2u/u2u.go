@@ -139,18 +139,10 @@ func (u *U2UClient) extractNTHashFromTicket(ticket *messages.Ticket, key types.E
 		return nil, fmt.Errorf("PAC_CREDENTIAL_INFO not found - TGT may not be from PKINIT")
 	}
 
-	fmt.Printf("[DEBUG] Full credentials buffer (%d bytes): %x\n", len(credBuf.Data), credBuf.Data)
-
 	credInfo, err := pac.ParseCredentialInfo(credBuf.Data)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse credential info: %w", err)
 	}
-
-	fmt.Printf("[DEBUG] PAC_CREDENTIAL_INFO Version: %d, EncryptionType: %d, DataLen: %d\n",
-		credInfo.Version, credInfo.EncryptionType, len(credInfo.SerializedData))
-	fmt.Printf("[DEBUG] AS-REP key: %x\n", u.asrepKey)
-	fmt.Printf("[DEBUG] TGT session key: %x\n", u.tgt.Key.KeyValue)
-	fmt.Printf("[DEBUG] SerializedData (first 32 bytes): %x\n", credInfo.SerializedData[:min(32, len(credInfo.SerializedData))])
 
 	// Create an EncryptionKey from the AS-REP key bytes
 	// Python forces etype 18 (AES256) regardless of what the PAC says
@@ -164,11 +156,9 @@ func (u *U2UClient) extractNTHashFromTicket(ticket *messages.Ticket, key types.E
 	keyUsages := []uint32{16, 11, 9, 2}
 	var decrypted []byte
 	for _, ku := range keyUsages {
-		fmt.Printf("[DEBUG] Trying AS-REP key with usage %d\n", ku)
 		dec, err := crypto.DecryptMessage(credInfo.SerializedData, asrepEncKey, ku)
 		if err == nil {
 			decrypted = dec
-			fmt.Printf("[DEBUG] SUCCESS with AS-REP key and usage %d!\n", ku)
 			break
 		}
 	}
@@ -187,8 +177,16 @@ func (u *U2UClient) extractNTHashFromTicket(ticket *messages.Ticket, key types.E
 	}
 
 	for _, cred := range credData.Credentials {
-		if len(cred.NTPassword) > 0 {
-			return cred.NTPassword, nil
+		// Check if NT password is not all zeros
+		hasNT := false
+		for _, b := range cred.NTPassword {
+			if b != 0 {
+				hasNT = true
+				break
+			}
+		}
+		if hasNT {
+			return cred.NTPassword[:], nil
 		}
 	}
 

@@ -1,25 +1,26 @@
 package s4u
 
 import (
-"crypto/hmac"
-"crypto/md5"
-"encoding/asn1"
-"encoding/binary"
-"fmt"
+	"crypto/hmac"
+	"crypto/md5"
+	"encoding/asn1"
+	"encoding/binary"
+	"fmt"
+	"strings"
 
-"github.com/ineffectivecoder/gopkinit/pkg/ccache"
-"github.com/ineffectivecoder/gopkinit/pkg/krb"
-"github.com/jcmturner/gokrb5/v8/iana/chksumtype"
-"github.com/jcmturner/gokrb5/v8/iana/nametype"
-"github.com/jcmturner/gokrb5/v8/messages"
-"github.com/jcmturner/gokrb5/v8/types"
+	"github.com/ineffectivecoder/gopkinit/pkg/ccache"
+	"github.com/ineffectivecoder/gopkinit/pkg/krb"
+	"github.com/jcmturner/gokrb5/v8/iana/chksumtype"
+	"github.com/jcmturner/gokrb5/v8/iana/nametype"
+	"github.com/jcmturner/gokrb5/v8/messages"
+	"github.com/jcmturner/gokrb5/v8/types"
 )
 
 // S4U2SelfClient handles S4U2Self impersonation
 type S4U2SelfClient struct {
-	ccache      *ccache.CCache
-	tgt         *ccache.Credential
-	kdcAddress  string
+	ccache     *ccache.CCache
+	tgt        *ccache.Credential
+	kdcAddress string
 }
 
 // NewS4U2SelfClient creates a new S4U2Self client
@@ -81,6 +82,11 @@ func (s *S4U2SelfClient) GetS4U2SelfTicket(targetUser, targetRealm, serviceName,
 	client := krb.NewKDCClient(s.kdcAddress)
 	respBytes, err := client.SendTGSReq(reqBytes)
 	if err != nil {
+		// Check if this is error 16 (KDC_ERR_PADATA_TYPE_NOSUPP)
+		// In S4U2Self context, this typically means delegation is not enabled for this account
+		if strings.Contains(err.Error(), "KDC_ERR_PADATA_TYPE_NOSUPP") || strings.Contains(err.Error(), "(16)") {
+			return fmt.Errorf("S4U2Self failed - delegation may not be enabled for this account. Original error: %w", err)
+		}
 		return fmt.Errorf("failed to send TGS-REQ: %w", err)
 	}
 
@@ -107,16 +113,20 @@ func (s *S4U2SelfClient) GetS4U2SelfTicket(targetUser, targetRealm, serviceName,
 // buildPAForUser constructs a PA-FOR-USER padata
 func (s *S4U2SelfClient) buildPAForUser(username, realm string) (types.PAData, error) {
 	// Build checksum data: nameType(4) + username + realm + "Kerberos"
+	// Per MS-SFU 2.2.1, the S4UByteArray is: name-type (4 bytes LE) + name + realm + auth-package
 	checksumData := make([]byte, 4)
 	binary.LittleEndian.PutUint32(checksumData, uint32(nametype.KRB_NT_PRINCIPAL))
 	checksumData = append(checksumData, []byte(username)...)
 	checksumData = append(checksumData, []byte(realm)...)
 	checksumData = append(checksumData, []byte("Kerberos")...)
 
-	// Compute HMAC-MD5 checksum
-	h := hmac.New(md5.New, s.tgt.Key.KeyValue)
-	h.Write(checksumData)
-	checksumValue := h.Sum(nil)
+	// Compute RFC 4757 HMAC-MD5 checksum (KERB_CHECKSUM_HMAC_MD5 type -138)
+	// This is NOT a simple HMAC-MD5. It uses the Kerberos HMAC-MD5 algorithm:
+	// 1. ksign = HMAC-MD5(key, "signaturekey\x00")
+	// 2. md5hash = MD5(usage_str(keyusage) + data) where usage_str is 4-byte LE keyusage
+	// 3. checksum = HMAC-MD5(ksign, md5hash)
+	// Key usage 17 is used for PA-FOR-USER checksum (S4U)
+	checksumValue := computeKerbHMACMD5(s.tgt.Key.KeyValue, 17, checksumData)
 
 	// Build PA-FOR-USER structure
 	paForUser := PAForUserEnc{
@@ -172,6 +182,33 @@ func parseSPN(spn string) (types.PrincipalName, error) {
 		NameType:   nametype.KRB_NT_SRV_INST,
 		NameString: components,
 	}, nil
+}
+
+// computeKerbHMACMD5 computes the RFC 4757 Kerberos HMAC-MD5 checksum.
+// This is used for KERB_CHECKSUM_HMAC_MD5 (checksum type -138 / 0xFFFFFF76).
+// Algorithm:
+//  1. ksign = HMAC-MD5(key, "signaturekey\x00")
+//  2. md5hash = MD5(usage_str(keyusage) + text) where usage_str is 4-byte little-endian keyusage
+//  3. checksum = HMAC-MD5(ksign, md5hash)
+func computeKerbHMACMD5(key []byte, keyusage uint32, data []byte) []byte {
+	// Step 1: Derive signing key
+	ksign := hmac.New(md5.New, key)
+	ksign.Write([]byte("signaturekey\x00"))
+	ksignKey := ksign.Sum(nil)
+
+	// Step 2: Compute MD5 of usage_str + data
+	usageBytes := make([]byte, 4)
+	binary.LittleEndian.PutUint32(usageBytes, keyusage)
+
+	md5Hash := md5.New()
+	md5Hash.Write(usageBytes)
+	md5Hash.Write(data)
+	md5Value := md5Hash.Sum(nil)
+
+	// Step 3: HMAC-MD5(ksign, md5hash)
+	finalHmac := hmac.New(md5.New, ksignKey)
+	finalHmac.Write(md5Value)
+	return finalHmac.Sum(nil)
 }
 
 // PA-FOR-USER ASN.1 structure

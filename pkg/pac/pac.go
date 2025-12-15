@@ -46,12 +46,10 @@ type PACCredentialData struct {
 
 // NTLMCredential contains NTLM credentials
 type NTLMCredential struct {
-	Version          uint32
-	Flags            uint32
-	LMPasswordLength uint16
-	LMPassword       []byte
-	NTPasswordLength uint16
-	NTPassword       []byte
+	Version    uint32
+	Flags      uint32
+	LMPassword [16]byte
+	NTPassword [16]byte
 }
 
 // ParsePAC parses a PAC from raw bytes
@@ -77,23 +75,17 @@ func ParsePAC(data []byte) (*PAC, error) {
 	}
 
 	// Read buffer data
+	// The Offset field in PAC_INFO_BUFFER is the offset from the START of the PACTYPE structure
+	// (i.e., from byte 0 which is the cBuffers field), NOT from after the header.
 	for i := range pac.Buffers {
-		offset := pac.Buffers[i].Offset - 8 // Offset is from start of PAC including header
+		offset := pac.Buffers[i].Offset
 		size := pac.Buffers[i].Size
 
-		fmt.Printf("[DEBUG PAC ParsePAC] Buffer %d: Type=0x%x, Size=%d, Offset=%d, calc_offset=%d\n",
-			i, pac.Buffers[i].Type, size, pac.Buffers[i].Offset, offset)
-
 		if uint64(len(data)) < offset+uint64(size) {
-			return nil, fmt.Errorf("PAC buffer %d out of bounds", i)
+			return nil, fmt.Errorf("PAC buffer %d out of bounds (data len=%d, need offset=%d + size=%d)", i, len(data), offset, size)
 		}
 
 		pac.Buffers[i].Data = data[offset : offset+uint64(size)]
-
-		if pac.Buffers[i].Type == PACTypeCredentials {
-			fmt.Printf("[DEBUG PAC ParsePAC] Credentials buffer first 32 bytes: %x\n",
-				pac.Buffers[i].Data[:min(32, len(pac.Buffers[i].Data))])
-		}
 	}
 
 	return pac, nil
@@ -110,93 +102,153 @@ func (p *PAC) FindBuffer(bufferType uint32) *PACInfoBuffer {
 }
 
 // ParseCredentialInfo parses a PAC_CREDENTIAL_INFO buffer
+// Per MS-PAC 2.6.1:
+//
+//	Version (4 bytes) - must be 0
+//	EncryptionType (4 bytes) - e.g., 18 for AES256
+//	SerializedData (variable) - encrypted PAC_CREDENTIAL_DATA
 func ParseCredentialInfo(data []byte) (*PACCredentialInfo, error) {
-	if len(data) < 16 {
-		return nil, fmt.Errorf("credential info data too short")
-	}
-
-	fmt.Printf("[DEBUG PAC] Input data len: %d\n", len(data))
-	fmt.Printf("[DEBUG PAC] First 24 bytes: %x\n", data[:min(24, len(data))])
-
-	// WORKAROUND: gokrb5 seems to include an 8-byte NDR header that Python doesn't get
-	// If the buffer starts with a pattern like 0x07000020 00000000, skip it
-	// The real structure starts with Version=0, EncType=18
-	if len(data) >= 16 && binary.LittleEndian.Uint32(data[8:12]) == 0 &&
-		binary.LittleEndian.Uint32(data[12:16]) == 18 {
-		fmt.Printf("[DEBUG PAC] Detected NDR header, skipping first 8 bytes\n")
-		data = data[8:]
+	if len(data) < 8 {
+		return nil, fmt.Errorf("credential info data too short (need at least 8 bytes, got %d)", len(data))
 	}
 
 	credInfo := &PACCredentialInfo{}
 
 	credInfo.Version = binary.LittleEndian.Uint32(data[0:4])
-	fmt.Printf("[DEBUG PAC] Version: %d\n", credInfo.Version)
-
 	credInfo.EncryptionType = binary.LittleEndian.Uint32(data[4:8])
-	fmt.Printf("[DEBUG PAC] EncryptionType: %d\n", credInfo.EncryptionType)
 
 	// Encrypted data starts at offset 8
 	credInfo.SerializedData = data[8:]
-	fmt.Printf("[DEBUG PAC] SerializedData len: %d\n", len(credInfo.SerializedData))
-	fmt.Printf("[DEBUG PAC] SerializedData first 16 bytes: %x\n", credInfo.SerializedData[:min(16, len(credInfo.SerializedData))])
 
 	return credInfo, nil
 }
 
 // ParseCredentialData parses decrypted PAC credential data
+// The data format is:
+//
+//	TypeSerialization1 (16 bytes) - NDR version/endianness info
+//	ReferentID (4 bytes) - typically 0xcccccccc
+//	PAC_CREDENTIAL_DATA (NDR encoded)
 func ParseCredentialData(data []byte) (*PACCredentialData, error) {
-	if len(data) < 4 {
-		return nil, fmt.Errorf("credential data too short")
+	if len(data) < 20 {
+		return nil, fmt.Errorf("credential data too short (need at least 20 bytes, got %d)", len(data))
 	}
 
 	r := bytes.NewReader(data)
 	credData := &PACCredentialData{}
 
-	// Skip TypeSerialization1 header (first 4 bytes are 0x00000001)
-	var typeSerial uint32
-	binary.Read(r, binary.LittleEndian, &typeSerial)
+	// Skip TypeSerialization1 header (16 bytes)
+	typeSerial := make([]byte, 16)
+	r.Read(typeSerial)
 
-	// Skip ReferentID (4 bytes)
+	// Read ReferentID (4 bytes, typically 0xcccccccc)
 	var referentID uint32
 	binary.Read(r, binary.LittleEndian, &referentID)
 
-	// Read credential count
-	binary.Read(r, binary.LittleEndian, &credData.CredentialCount)
+	// Now we're at the PAC_CREDENTIAL_DATA in NDR format
+	// NDR conformant array: MaxCount, Offset, ActualCount, then data
+	var maxCount uint32
+	binary.Read(r, binary.LittleEndian, &maxCount)
 
-	// Read each credential
-	for i := uint32(0); i < credData.CredentialCount; i++ {
-		var cred NTLMCredential
+	// Read each credential from the NDR array
+	// Each SECPKG_SUPPLEMENTAL_CRED has:
+	//   - RPC_UNICODE_STRING for PackageName (which has Length, MaximumLength, Pointer)
+	//   - ULONG CredentialSize
+	//   - PUCHAR_ARRAY Credentials (pointer to array)
 
-		// Package name length (skip)
-		var packageNameLength uint16
-		binary.Read(r, binary.LittleEndian, &packageNameLength)
+	// Store the CredentialSize values for later use
+	credSizes := make([]uint32, maxCount)
 
-		// Package name (skip)
-		packageName := make([]byte, packageNameLength)
-		r.Read(packageName)
+	for i := uint32(0); i < maxCount; i++ {
+		// RPC_UNICODE_STRING for PackageName
+		// Structure: Length (2 bytes), MaximumLength (2 bytes), Pointer (4 bytes)
+		var pkgNameLen, pkgNameMaxLen uint16
+		var pkgNamePtr uint32
+		binary.Read(r, binary.LittleEndian, &pkgNameLen)
+		binary.Read(r, binary.LittleEndian, &pkgNameMaxLen)
+		binary.Read(r, binary.LittleEndian, &pkgNamePtr)
 
-		// Credential length
-		var credLength uint16
-		binary.Read(r, binary.LittleEndian, &credLength)
+		// Read 8 bytes - there appear to be TWO uint32 fields here
+		// The SECOND field (at offset +4) is the actual credential size we need
+		var field1, credSize uint32
+		binary.Read(r, binary.LittleEndian, &field1)   // Unknown field (appears to be a referent ID or marker)
+		binary.Read(r, binary.LittleEndian, &credSize) // Actual credential size
 
-		// Read NTLM credential structure
-		credStart := len(data) - r.Len()
-		credBytes := data[credStart : credStart+int(credLength)]
+		credSizes[i] = credSize
+		credData.CredentialCount++
+	}
 
-		if err := parseNTLMCredential(&cred, credBytes); err != nil {
+	// After processing the array headers, we need to read the actual string and credential data
+	// This is pointed to by the pointers we read above
+	// For now, let's read the package name string if present
+	for i := uint32(0); i < maxCount; i++ {
+		// Read package name conformant array: MaxCount, Offset, ActualCount, Data
+		var pkgMaxCount, pkgOffset, pkgActualCount uint32
+		binary.Read(r, binary.LittleEndian, &pkgMaxCount)
+		binary.Read(r, binary.LittleEndian, &pkgOffset)
+		binary.Read(r, binary.LittleEndian, &pkgActualCount)
+
+		// Read the wide-char string
+		pkgNameBytes := make([]byte, pkgActualCount*2)
+		r.Read(pkgNameBytes)
+
+		// Convert from UTF-16LE to string
+		pkgName := ""
+		for j := 0; j < len(pkgNameBytes); j += 2 {
+			if j+1 < len(pkgNameBytes) {
+				c := uint16(pkgNameBytes[j]) | uint16(pkgNameBytes[j+1])<<8
+				if c != 0 {
+					pkgName += string(rune(c))
+				}
+			}
+		}
+
+		// Align to 4-byte boundary
+		if pkgActualCount*2%4 != 0 {
+			padding := 4 - (pkgActualCount * 2 % 4)
+			r.Read(make([]byte, padding))
+		}
+
+		// Read credentials conformant array: MaxCount, Offset, ActualCount, Data
+		var credMaxCount, credOffset, credActualCount uint32
+		binary.Read(r, binary.LittleEndian, &credMaxCount)
+		binary.Read(r, binary.LittleEndian, &credOffset)
+		binary.Read(r, binary.LittleEndian, &credActualCount)
+
+		// Use CredentialSize from the SECPKG_SUPPLEMENTAL_CRED structure
+		// The actual NTLM credential data is 4 bytes larger than CredentialSize
+		// The first 4 bytes appear to be a referent ID or size marker
+		credBytes := make([]byte, credSizes[i]+4)
+		r.Read(credBytes)
+
+		// Skip the first 4 bytes which appear to be a size/referent ID, not part of NTLM_SUPPLEMENTAL_CREDENTIAL
+		var ntlmCred NTLMCredential
+		if err := parseNTLMCredential(&ntlmCred, credBytes[4:]); err != nil {
 			return nil, err
 		}
 
-		credData.Credentials = append(credData.Credentials, cred)
+		credData.Credentials = append(credData.Credentials, ntlmCred)
 	}
 
 	return credData, nil
 }
 
 // parseNTLMCredential parses an NTLM_SUPPLEMENTAL_CREDENTIAL structure
+// Per MS-PAC 2.6.4, when CredentialSize is 24, the structure has:
+//
+//	Version (4 bytes)
+//	Flags (4 bytes)
+//	NtPassword (16 bytes)
+//
+// When CredentialSize is 40, the structure has:
+//
+//	Version (4 bytes)
+//	Flags (4 bytes)
+//	LmPassword (16 bytes)
+//	NtPassword (16 bytes)
 func parseNTLMCredential(cred *NTLMCredential, data []byte) error {
-	if len(data) < 8 {
-		return fmt.Errorf("NTLM credential too short")
+	if len(data) < 24 {
+		return fmt.Errorf("NTLM credential too short (need at least 24 bytes, got %d)", len(data))
 	}
 
 	r := bytes.NewReader(data)
@@ -204,18 +256,12 @@ func parseNTLMCredential(cred *NTLMCredential, data []byte) error {
 	binary.Read(r, binary.LittleEndian, &cred.Version)
 	binary.Read(r, binary.LittleEndian, &cred.Flags)
 
-	// LM password
-	binary.Read(r, binary.LittleEndian, &cred.LMPasswordLength)
-	if cred.LMPasswordLength > 0 {
-		cred.LMPassword = make([]byte, cred.LMPasswordLength)
-		r.Read(cred.LMPassword)
-	}
-
-	// NT password
-	binary.Read(r, binary.LittleEndian, &cred.NTPasswordLength)
-	if cred.NTPasswordLength > 0 {
-		cred.NTPassword = make([]byte, cred.NTPasswordLength)
-		r.Read(cred.NTPassword)
+	// If credential is only 24 bytes, there's no LMPassword
+	if len(data) == 24 {
+		r.Read(cred.NTPassword[:])
+	} else {
+		r.Read(cred.LMPassword[:])
+		r.Read(cred.NTPassword[:])
 	}
 
 	return nil

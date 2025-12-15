@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"math/big"
+	"strings"
 	"time"
 
 	"github.com/jcmturner/gofork/encoding/asn1"
@@ -172,6 +173,11 @@ func (c *KDCClient) SendTGSReq(req []byte) ([]byte, error) {
 func ParseTGSRep(data []byte) (*messages.TGSRep, error) {
 	var tgsRep messages.TGSRep
 	if err := tgsRep.Unmarshal(data); err != nil {
+		// Check if this might be a KRB-ERROR instead
+		// Error code 16 in S4U2Self context typically means delegation not enabled
+		if strings.Contains(err.Error(), "KDC_ERR_PADATA_TYPE_NOSUPP") || strings.Contains(err.Error(), "(16)") {
+			return nil, fmt.Errorf("S4U2Self failed - the account may not have delegation enabled, or the target user may not be delegatable: %w", err)
+		}
 		return nil, fmt.Errorf("failed to unmarshal TGS-REP: %w", err)
 	}
 

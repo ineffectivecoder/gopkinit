@@ -1,13 +1,13 @@
 package main
 
 import (
-"encoding/hex"
-"flag"
-"fmt"
-"log"
-"os"
+	"encoding/hex"
+	"flag"
+	"fmt"
+	"log"
+	"os"
 
-"github.com/ineffectivecoder/gopkinit/pkg/u2u"
+	"github.com/ineffectivecoder/gopkinit/pkg/u2u"
 )
 
 func main() {
@@ -62,6 +62,5 @@ func main() {
 		log.Fatalf("Failed to extract NT hash: %v", err)
 	}
 
-	fmt.Println("Recovered NT Hash:")
-	fmt.Println(hex.EncodeToString(ntHash))
+	fmt.Printf("Recovered NT Hash: %x\n", ntHash)
 }
