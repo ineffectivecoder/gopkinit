@@ -4,6 +4,9 @@
 
 # gopkinit
 
+## Experimental Go PKINIT and Kerberos Attack Tools
+This code in this repo functions, but much of it was AI generated. Please review and verify before using in production.
+
 A complete Go implementation of PKINIT (Public Key Cryptography for Initial Authentication in Kerberos) and related attack tools for Active Directory security testing.
 
 ## Status: All Three Tools Working
