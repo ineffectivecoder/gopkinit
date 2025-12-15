@@ -1,3 +1,7 @@
+<div align="center">
+  <img src="pkinit-logo.png" alt="PKINIT Library" width="400"/>
+</div>
+
 # gopkinit
 
 A complete Go implementation of PKINIT (Public Key Cryptography for Initial Authentication in Kerberos) and related attack tools for Active Directory security testing.
