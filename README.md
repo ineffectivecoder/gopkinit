@@ -1,44 +1,41 @@
 # gopkinit
 
-A complete Go implementation of PKINIT (Public Key Cryptography for Initial Authentication in Kerberos), providing certificate-based authentication to Active Directory.
+A complete Go implementation of PKINIT (Public Key Cryptography for Initial Authentication in Kerberos) and related attack tools for Active Directory security testing.
 
-## 🎉 Status: **FULLY WORKING**
+## Status: All Three Tools Working
 
-Successfully tested against Active Directory - obtains valid TGTs and authenticates to services (SMB, LDAP, etc.)
+- **gettgtpkinit** - Obtain TGT using X.509 certificate authentication
+- **getnthash** - Extract NT hash from PKINIT TGT using U2U authentication
+- **gets4uticket** - Perform S4U2Self impersonation to obtain service tickets
 
 ## Overview
 
-This project implements RFC 4556 (PKINIT) in Go, providing both a reusable library and a CLI tool. Unlike `gokrb5`, which lacks PKINIT support, this implementation adds the complete PKINIT layer for certificate-based Kerberos authentication.
-
-## Features
-
-- ✅ **PKINIT Authentication**: Request TGT using X.509 certificate authentication
-- ✅ **Certificate Support**: Load certificates from PFX/PKCS12 files
-- ✅ **Diffie-Hellman Key Exchange**: Implements DH with static parameters for AD compatibility
-- ✅ **CMS/PKCS7 Signing**: Native Go implementation of AuthPack signing
-- ✅ **ccache Output**: Generates MIT Kerberos ccache v4 files (compatible with all tools)
-- ✅ **AS-REP Key Export**: Outputs encryption key needed for getnthash
-- ✅ **SOCKS5 Proxy**: Support for proxying connections through SOCKS5
-- ✅ **Production Ready**: Successfully tested with Impacket, native Kerberos tools
+This project implements RFC 4556 (PKINIT) in Go along with U2U and S4U2Self functionality, providing a complete toolset for certificate-based Kerberos attacks. Unlike `gokrb5`, which lacks PKINIT support, this implementation provides the complete PKINIT layer plus advanced attack capabilities.
 
 ## Installation
 
 ```bash
-# Clone and build
+# Clone and build all tools
 git clone <repo>
 cd gopkinit
 go build -o gettgtpkinit ./cmd/gettgtpkinit
+go build -o getnthash ./cmd/getnthash
+go build -o gets4uticket ./cmd/gets4uticket
 
 # Or install directly
 go install github.com/ineffectivecoder/gopkinit/cmd/gettgtpkinit@latest
+go install github.com/ineffectivecoder/gopkinit/cmd/getnthash@latest
+go install github.com/ineffectivecoder/gopkinit/cmd/gets4uticket@latest
 ```
 
-## Usage
+## Tools
 
-### Basic Usage
+### gettgtpkinit - Certificate-Based TGT Request
+
+Request a TGT using X.509 certificate authentication (PKINIT).
 
 ```bash
-# Request TGT with certificate
+# Basic usage
 ./gettgtpkinit -cert-pfx user.pfx DOMAIN.COM/user output.ccache
 
 # With password-protected PFX
@@ -54,40 +51,151 @@ go install github.com/ineffectivecoder/gopkinit/cmd/gettgtpkinit@latest
 ./gettgtpkinit -cert-pfx user.pfx -v DOMAIN.COM/user output.ccache
 ```
 
-### Using the Obtained TGT
+**Output**: Saves TGT to ccache file and prints the AS-REP encryption key (needed for `getnthash`).
+
+### getnthash - NT Hash Extraction via U2U
+
+Extract NT hash from a PKINIT-obtained TGT using User-to-User (U2U) authentication. This works because PKINIT TGTs contain an encrypted PAC_CREDENTIAL_INFO buffer with the user's NT hash.
 
 ```bash
-# Verify the TGT
-klist -c output.ccache
-
-# Use with Impacket tools
-export KRB5CCNAME=output.ccache
-smbclient.py -k target.domain.com
-secretsdump.py -k domain/user@dc.domain.com -no-pass
-
-# Use with native Kerberos tools
-kinit -c output.ccache
+./getnthash -ccache user.ccache -key <asrep-key-from-gettgtpkinit> -dc-ip 10.0.0.1
 ```
 
-### Example Output
+**Options**:
+- `-ccache` - Path to ccache file containing PKINIT TGT
+- `-key` - AS-REP encryption key from gettgtpkinit (hex string)
+- `-dc-ip` - IP address of domain controller
+- `-v` - Verbose output
 
+**Output**: Prints the recovered NT hash.
+
+### gets4uticket - S4U2Self Impersonation
+
+Obtain a service ticket impersonating another user using S4U2Self. Requires an account with delegation privileges.
+
+```bash
+./gets4uticket -ccache admin.ccache -impersonate user@DOMAIN.COM \
+  -spn cifs/fileserver.domain.com@DOMAIN.COM -dc-ip 10.0.0.1 -out user_cifs.ccache
 ```
+
+**Options**:
+- `-ccache` - Path to ccache file containing TGT
+- `-impersonate` - User to impersonate (format: user@REALM)
+- `-spn` - Service principal name (format: service/host@REALM)
+- `-dc-ip` - IP address of domain controller
+- `-out` - Output ccache file path
+- `-v` - Verbose output
+
+**Output**: Saves impersonated service ticket to ccache file.
+
+## Example Workflow
+
+```bash
+# Step 1: Get TGT with certificate
 $ ./gettgtpkinit -cert-pfx slacker.pfx -dc-ip 10.1.1.10 spinninglikea.top/slacker output.ccache
 AS-REP encryption key (you might need this later):
 95ba4cf1622f464d4fd5110797d24ea6c12dc0bea44eb19e9bb1242e4abb7207
-2025/12/15 00:01:40 Saved TGT to file
+Saved TGT to file
 
-$ klist -c output.ccache
-Ticket cache: FILE:output.ccache
-Default principal: slacker@SPINNINGLIKEA.TOP
+# Step 2: Extract NT hash from the PKINIT TGT
+$ ./getnthash -ccache output.ccache -key 95ba4cf1622f464d4fd5110797d24ea6c12dc0bea44eb19e9bb1242e4abb7207 -dc-ip 10.1.1.10
+Recovered NT Hash: a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4
 
-Valid starting       Expires              Service principal
-12/15/2025 00:01:34  12/15/2025 10:01:34  krbtgt/SPINNINGLIKEA.TOP@SPINNINGLIKEA.TOP
-        renew until 12/16/2025 00:01:40, Etype: aes256-cts-hmac-sha1-96
-
-$ KRB5CCNAME=output.ccache smbclient.py -k tip.spinninglikea.top
-# Connected successfully with admin access!
+# Step 3: Use TGT with other tools
+$ export KRB5CCNAME=output.ccache
+$ smbclient.py -k target.domain.com
 ```
+
+## Features
+
+### gettgtpkinit
+- PKINIT Authentication (RFC 4556)
+- PFX/PKCS12 certificate loading
+- Diffie-Hellman key exchange with static AD-compatible parameters
+- Native CMS/PKCS7 signing
+- MIT Kerberos ccache v4 output
+- AS-REP key export for getnthash
+- SOCKS5 proxy support
+
+### getnthash
+- User-to-User (U2U) TGS request
+- PAC parsing with PAC_CREDENTIAL_INFO extraction
+- AES256 decryption of encrypted credentials
+- NDR structure parsing for NTLM_SUPPLEMENTAL_CREDENTIAL
+
+### gets4uticket
+- S4U2Self (Service-for-User-to-Self) implementation
+- RFC 4757 HMAC-MD5 checksum for PA-FOR-USER
+- Delegation-based impersonation
+- Service ticket output to ccache
+
+## Project Structure
+
+```
+gopkinit/
+├── cmd/
+│   ├── gettgtpkinit/     # TGT retrieval CLI
+│   ├── getnthash/        # NT hash extraction CLI
+│   └── gets4uticket/     # S4U2Self CLI
+├── pkg/
+│   ├── cert/             # Certificate loading
+│   ├── pkinit/           # PKINIT implementation
+│   │   ├── pkinit.go     # Main client
+│   │   ├── dh.go         # Diffie-Hellman
+│   │   ├── authpack.go   # ASN.1 structures
+│   │   ├── cms.go        # CMS/PKCS7 signing
+│   │   ├── asreq.go      # AS-REQ builder
+│   │   └── asrep.go      # AS-REP decryption
+│   ├── krb/              # Kerberos network client
+│   │   ├── client.go     # KDC communication
+│   │   └── tgs.go        # TGS-REQ/TGS-REP handling
+│   ├── ccache/           # MIT ccache file I/O
+│   │   ├── ccache.go     # Writer
+│   │   └── reader.go     # Reader
+│   ├── s4u/              # S4U2Self implementation
+│   │   └── s4u.go
+│   ├── u2u/              # User-to-User implementation
+│   │   └── u2u.go
+│   └── pac/              # PAC parsing
+│       └── pac.go
+```
+
+## Technical Implementation Details
+
+### PKINIT (gettgtpkinit)
+
+The PKINIT implementation handles several complex requirements:
+
+1. **Static Diffie-Hellman Parameters**: Active Directory requires specific 1024-bit DH parameters (not dynamically generated)
+
+2. **ASN.1 Tagging Complexity**: Kerberos uses a mix of implicit and explicit ASN.1 tags requiring careful handling
+
+3. **DH Shared Secret Padding**: `big.Int.Bytes()` strips leading zeros, so shared secrets must be zero-padded to modulus size (128 bytes)
+
+4. **ServerDHNonce Extraction**: The 32-byte nonce in PA_PK_AS_REP uses explicit tags requiring two-step parsing
+
+### S4U2Self (gets4uticket)
+
+The S4U2Self implementation includes:
+
+1. **RFC 4757 HMAC-MD5 Checksum**: PA-FOR-USER requires the Kerberos HMAC-MD5 algorithm (not plain HMAC-MD5):
+   - `ksign = HMAC-MD5(key, "signaturekey\x00")`
+   - `md5hash = MD5(usage_str(keyusage) + data)`
+   - `checksum = HMAC-MD5(ksign, md5hash)`
+
+2. **Key Usage 17**: The S4U checksum uses key usage 17 per MS-SFU specification
+
+### U2U/NT Hash Extraction (getnthash)
+
+The U2U implementation extracts NT hashes from PKINIT TGTs:
+
+1. **U2U TGS Request**: Request a ticket to ourselves with `enc_tkt_in_skey` flag set
+
+2. **PAC Parsing**: Parse the PAC structure to find PAC_CREDENTIAL_INFO (type 2)
+
+3. **Credential Decryption**: Decrypt the PAC_CREDENTIAL_INFO using the AS-REP key with key usage 16
+
+4. **NDR Parsing**: Parse the NDR-encoded PAC_CREDENTIAL_DATA to extract NTLM_SUPPLEMENTAL_CREDENTIAL
 
 ## Library Usage
 
@@ -108,82 +216,7 @@ if err != nil {
 
 // Use result.ASRepKey for getnthash
 fmt.Println("AS-REP Key:", result.ASRepKey)
-
-// result.Ticket and result.SessionKey available for further operations
 ```
-
-## Project Structure
-
-```
-gopkinit/
-├── cmd/
-│   └── gettgtpkinit/     # CLI tool
-│       └── main.go
-├── pkg/
-│   ├── cert/             # Certificate loading
-│   │   └── loader.go
-│   ├── pkinit/           # PKINIT implementation
-│   │   ├── pkinit.go     # Main client
-│   │   ├── dh.go         # Diffie-Hellman
-│   │   ├── authpack.go   # ASN.1 structures
-│   │   ├── cms.go        # CMS/PKCS7 signing
-│   │   ├── asreq.go      # AS-REQ builder
-│   │   ├── asrep.go      # AS-REP decryption
-│   │   └── manual_decrypt.go  # Manual AES-CTS decryption
-│   ├── krb/              # Kerberos network client
-│   │   └── client.go
-│   └── ccache/           # ccache file writer
-│       └── ccache.go
-```
-
-## Bugs Fixed During Development
-
-### Critical Bug #1: ServerDHNonce Not Extracted
-
-**Problem**: The `serverDHNonce` field (32 bytes) in PA_PK_AS_REP was not being extracted, causing wrong encryption key and HMAC verification failures.
-
-**Fix**: Two-step parsing with explicit tag handling for mixed implicit/explicit ASN.1 tags.
-
-**Impact**: Full key changed from 160 bytes → 192 bytes, HMAC now verifies ✅
-
-### Critical Bug #2: DH Shared Secret Padding
-
-**Problem**: `big.Int.Bytes()` strips leading zeros, causing variable-length shared secrets.
-
-**Fix**: Always pad to modulus size (128 bytes for 1024-bit DH).
-
-### Bug #3: ccache Key Format
-
-**Problem**: Missing 2-byte `etype` field between keytype and keylen in MIT ccache v4 format.
-
-**Fix**: Added etype field (always 0) - ccache files now work with all Kerberos tools ✅
-
-### Additional Fixes
-
-- APPLICATION tag wrapper for AS-REQ
-- NULL parameters in CMS digest/signature algorithms  
-- DH public key INTEGER encoding
-- EncapsulatedContentInfo OCTET STRING wrapper
-- EncASRepPart APPLICATION 25 tag unwrapping
-- Ticket APPLICATION 1 tag unwrapping
-
-See [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) for complete technical details.
-
-## Testing & Verification
-
-### Successful Tests
-
-✅ **TGT Retrieval**: Successfully obtains valid TGTs from Active Directory  
-✅ **ccache Compatibility**: Works with `klist`, `kinit`, and all native tools  
-✅ **Impacket Integration**: Tested with `smbclient.py`, `secretsdump.py`, `ldapdomaindump`  
-✅ **Production Use**: TGTs usable for real authentication
-
-### Test Results
-
-- **Domain**: spinninglikea.top  
-- **DC**: Windows Server 2019 (10.1.1.10)
-- **Certificate**: AD CS enrolled user certificate
-- **Verification**: SMB admin share access, LDAP queries, service authentication
 
 ## Dependencies
 
@@ -201,23 +234,18 @@ require (
 - PEM certificate format not yet supported (use PFX)
 - RC4 encryption not supported (AES256/AES128 only)
 - No smart card/hardware token support
-
-## Future Enhancements
-
-- **getnthash**: U2U (User-to-User) for NT hash extraction
-- **gets4uticket**: S4U2Self implementation
-- **PEM Support**: Load certificates from PEM files
+- S4U2Proxy not yet implemented
 
 ## References
 
 - [RFC 4556 - PKINIT](https://datatracker.ietf.org/doc/html/rfc4556)
+- [RFC 4757 - RC4-HMAC Kerberos Encryption](https://datatracker.ietf.org/doc/html/rfc4757)
+- [MS-SFU - S4U Extensions](https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-sfu/)
+- [MS-PAC - PAC Data Structure](https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-pac/)
 - [PKINITtools](https://github.com/dirkjanm/PKINITtools) by @_dirkjan
+- [minikerberos](https://github.com/skelsec/minikerberos) by @skelsec
 - [gokrb5](https://github.com/jcmturner/gokrb5)
 
 ## License
 
-Based on PKINITtools by Dirk-jan Mollema (@_dirkjan).
-
----
-
-**Built for the security community** 🔐
+Based on PKINITtools by Dirk-jan Mollema (@_dirkjan) and minikerberos by Tamas Jos (@skelsec).
