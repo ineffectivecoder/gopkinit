@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="pkinit-logo.png" alt="PKINIT Library" width="400"/>
+  <img src="pkinitbro.png" alt="PKINIT Library" width="400"/>
 </div>
 
 # gopkinit
