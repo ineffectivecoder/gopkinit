@@ -133,13 +133,24 @@ func SignAuthPack(data []byte, cert *x509.Certificate, privKey crypto.PrivateKey
 	}
 
 	// Create IssuerAndSerialNumber
-	issuerBytes, err := asn1.Marshal(cert.Issuer.ToRDNSequence())
+	// CRITICAL: We must use the raw issuer bytes from the certificate
+	// because cert.Issuer.ToRDNSequence() doesn't preserve domainComponent attributes correctly
+	// Parse the certificate to extract the raw issuer
+	var certSeq struct {
+		TBSCertificate struct {
+			Version            int `asn1:"optional,explicit,default:0,tag:0"`
+			SerialNumber       *big.Int
+			SignatureAlgorithm asn1.RawValue
+			RawIssuer          asn1.RawValue
+		}
+	}
+	_, err = asn1.Unmarshal(cert.Raw, &certSeq)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal issuer: %w", err)
+		return nil, fmt.Errorf("failed to parse certificate for issuer: %w", err)
 	}
 
 	sid := IssuerAndSerialNumber{
-		Issuer:       asn1.RawValue{FullBytes: issuerBytes},
+		Issuer:       certSeq.TBSCertificate.RawIssuer,
 		SerialNumber: cert.SerialNumber,
 	}
 

@@ -85,6 +85,22 @@ func (p *PKINITClient) GetTGT(domain, username, kdcAddress, proxyAddr string) (*
 		return nil, fmt.Errorf("failed to send AS-REQ: %w", err)
 	}
 
+	// Check if response is KRB-ERROR instead of AS-REP
+	var appTag asn1.RawValue
+	_, err = asn1.Unmarshal(asRepBytes, &appTag)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse KDC response: %w", err)
+	}
+
+	// APPLICATION 30 = KRB-ERROR, APPLICATION 11 = AS-REP
+	if appTag.Tag == 30 {
+		return nil, parseKRBError(asRepBytes)
+	}
+
+	if appTag.Tag != 11 {
+		return nil, fmt.Errorf("unexpected response tag: %d (expected 11 for AS-REP or 30 for KRB-ERROR)", appTag.Tag)
+	}
+
 	// Decrypt AS-REP
 	decrypted, err := p.DecryptASRep(asRepBytes)
 	if err != nil {
@@ -154,4 +170,68 @@ func (p *PKINITClient) GetPrivateKey() crypto.PrivateKey {
 // GetIssuer returns the issuer common name
 func (p *PKINITClient) GetIssuer() string {
 	return p.issuer
+}
+
+// parseKRBError parses a KRB-ERROR message and returns a descriptive error
+func parseKRBError(data []byte) error {
+	var appWrapper asn1.RawValue
+	_, err := asn1.Unmarshal(data, &appWrapper)
+	if err != nil {
+		return fmt.Errorf("KRB-ERROR received but failed to parse: %w", err)
+	}
+
+	var krbError struct {
+		PVNO      int                 `asn1:"explicit,tag:0"`
+		MsgType   int                 `asn1:"explicit,tag:1"`
+		CTime     asn1.RawValue       `asn1:"optional,explicit,tag:2"`
+		Cusec     int                 `asn1:"optional,explicit,tag:3"`
+		STime     asn1.RawValue       `asn1:"explicit,tag:4"`
+		Susec     int                 `asn1:"explicit,tag:5"`
+		ErrorCode int32               `asn1:"explicit,tag:6"`
+		CRealm    string              `asn1:"optional,generalstring,explicit,tag:7"`
+		CName     asn1.RawValue       `asn1:"optional,explicit,tag:8"`
+		Realm     string              `asn1:"generalstring,explicit,tag:9"`
+		SName     types.PrincipalName `asn1:"explicit,tag:10"`
+		EText     string              `asn1:"optional,generalstring,explicit,tag:11"`
+		EData     []byte              `asn1:"optional,explicit,tag:12"`
+	}
+
+	_, err = asn1.Unmarshal(appWrapper.Bytes, &krbError)
+	if err != nil {
+		return fmt.Errorf("KRB-ERROR received but failed to parse structure: %w", err)
+	}
+
+	errorName := getKerberosErrorName(krbError.ErrorCode)
+	if krbError.EText != "" {
+		return fmt.Errorf("KDC returned error: %s (%d) - %s", errorName, krbError.ErrorCode, krbError.EText)
+	}
+	return fmt.Errorf("KDC returned error: %s (%d)", errorName, krbError.ErrorCode)
+}
+
+// getKerberosErrorName returns the name of a Kerberos error code
+func getKerberosErrorName(code int32) string {
+	// Common Kerberos error codes
+	errors := map[int32]string{
+		6:  "KDC_ERR_C_PRINCIPAL_UNKNOWN",
+		7:  "KDC_ERR_S_PRINCIPAL_UNKNOWN",
+		12: "KDC_ERR_POLICY",
+		14: "KDC_ERR_ETYPE_NOSUPP",
+		16: "KDC_ERR_PADATA_TYPE_NOSUPP",
+		17: "KDC_ERR_PREAUTH_FAILED",
+		18: "KDC_ERR_CLIENT_REVOKED",
+		23: "KDC_ERR_KEY_EXPIRED",
+		24: "KDC_ERR_PREAUTH_REQUIRED",
+		25: "KDC_ERR_SERVER_NOMATCH",
+		31: "KRB_AP_ERR_BAD_INTEGRITY",
+		32: "KRB_AP_ERR_TKT_EXPIRED",
+		37: "KRB_AP_ERR_SKEW",
+		41: "KRB_AP_ERR_BADKEYVER",
+		60: "KDC_ERR_PREAUTH_EXPIRED",
+		85: "KDC_ERR_CLIENT_NOT_TRUSTED",
+	}
+
+	if name, ok := errors[code]; ok {
+		return name
+	}
+	return fmt.Sprintf("UNKNOWN_ERROR_%d", code)
 }

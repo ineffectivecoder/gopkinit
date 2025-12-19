@@ -41,7 +41,12 @@ go install github.com/ineffectivecoder/gopkinit/cmd/gets4uticket@latest
 
 Request a TGT using X.509 certificate authentication (PKINIT).
 
+**⚠️ CRITICAL REQUIREMENT:** Ensure your system clock is synchronized with the domain controller. Kerberos requires clock skew to be within ±5 minutes. On Linux, run `sudo ntpdate <dc-ip>` before executing the tool.
+
 ```bash
+# Sync time first (REQUIRED)
+sudo ntpdate 10.0.0.1
+
 # Basic usage
 ./gettgtpkinit -cert-pfx user.pfx DOMAIN.COM/user output.ccache
 
