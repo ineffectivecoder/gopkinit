@@ -312,19 +312,24 @@ func readTime(r io.Reader) (time.Time, error) {
 // GetTGT returns the TGT from the ccache
 func (cc *CCache) GetTGT() (*Credential, error) {
 	realm := cc.DefaultPrincipal.Realm
-	krbtgtName := "krbtgt/" + realm
 
 	for i := range cc.Credentials {
 		cred := &cc.Credentials[i]
-		if len(cred.Server.Components) == 2 &&
-			cred.Server.Components[0] == "krbtgt" &&
-			cred.Server.Components[1] == realm {
-			return cred, nil
+		// TGT should have server principal starting with "krbtgt"
+		if len(cred.Server.Components) >= 1 && cred.Server.Components[0] == "krbtgt" {
+			// Accept if:
+			// 1. Two components: krbtgt/<anything>
+			// 2. Or server realm matches client realm
+			if len(cred.Server.Components) == 2 || cred.Server.Realm == realm {
+				return cred, nil
+			}
 		}
-		// Also check single component
-		if len(cred.Server.Components) == 1 &&
-			cred.Server.Components[0] == krbtgtName {
-			return cred, nil
+		// Also check single component format: "krbtgt/<realm>"
+		if len(cred.Server.Components) == 1 {
+			krbtgtName := "krbtgt/" + realm
+			if cred.Server.Components[0] == krbtgtName {
+				return cred, nil
+			}
 		}
 	}
 
