@@ -9,7 +9,7 @@ This code in this repo functions, but much of it was AI generated. Please review
 
 A complete Go implementation of PKINIT (Public Key Cryptography for Initial Authentication in Kerberos) and related attack tools for Active Directory security testing.
 
-## Status: All Three Tools Working
+## Status: gettgtpkinit and getnthash functioning. Still working on gets4uticket
 
 - **gettgtpkinit** - Obtain TGT using X.509 certificate authentication
 - **getnthash** - Extract NT hash from PKINIT TGT using U2U authentication
