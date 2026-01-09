@@ -20,6 +20,14 @@ A complete Go implementation of PKINIT (Public Key Cryptography for Initial Auth
 
 This project implements RFC 4556 (PKINIT) in Go along with U2U and S4U2Self functionality, providing a toolset for certificate-based Kerberos attacks.
 
+## Documentation
+
+For detailed protocol explanations and implementation deep dives, see the [docs](docs/) directory:
+
+- [gettgtpkinit Deep Dive](docs/gettgtpkinit.md) - PKINIT internals, DH key exchange, troubleshooting
+- [getnthash Deep Dive](docs/getnthash.md) - U2U authentication, PAC parsing, NT hash extraction
+- [gets4uticket Deep Dive](docs/gets4uticket.md) - S4U2Self protocol, PA-FOR-USER, checksums
+
 ## Installation
 
 ```bash
