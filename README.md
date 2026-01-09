@@ -5,11 +5,12 @@
 # gopkinit
 
 ## Experimental Go PKINIT and Kerberos offensive tooling
+
 This code in this repo functions, but much of it was AI generated. Please review and verify before using in production. This was implemented as a learning excercise and may contain bugs or security issues.
 
 A complete Go implementation of PKINIT (Public Key Cryptography for Initial Authentication in Kerberos) and related attack tools for Active Directory security testing.
 
-## Status: gettgtpkinit and getnthash functioning. Still working on gets4uticket
+## Status: All tools working
 
 - **gettgtpkinit** - Obtain TGT using X.509 certificate authentication
 - **getnthash** - Extract NT hash from PKINIT TGT using U2U authentication
@@ -74,6 +75,7 @@ Extract NT hash from a PKINIT-obtained TGT using User-to-User (U2U) authenticati
 ```
 
 **Options**:
+
 - `-ccache` - Path to ccache file containing PKINIT TGT
 - `-key` - AS-REP encryption key from gettgtpkinit (hex string)
 - `-dc-ip` - IP address of domain controller
@@ -91,6 +93,7 @@ Obtain a service ticket impersonating another user using S4U2Self. Requires an a
 ```
 
 **Options**:
+
 - `-ccache` - Path to ccache file containing TGT
 - `-impersonate` - User to impersonate (format: user@REALM)
 - `-spn` - Service principal name (format: service/host@REALM)
@@ -178,6 +181,7 @@ fmt.Printf("Issuer: %s\n", client.GetIssuer())
 ```
 
 **TGTResult Fields**:
+
 - `Ticket` - The Kerberos ticket (gokrb5 messages.Ticket)
 - `EncPart` - Decrypted AS-REP encrypted part
 - `SessionKey` - TGT session key for subsequent requests
@@ -218,6 +222,7 @@ fmt.Println("Impersonated ticket saved to impersonated.ccache")
 ```
 
 **Requirements**:
+
 - The account whose TGT is in the ccache must have delegation privileges
 - The target user must be delegatable (not marked as "sensitive")
 
@@ -255,6 +260,7 @@ fmt.Printf("NT Hash: %x\n", ntHash)
 ```
 
 **How it works**:
+
 1. Sends U2U TGS-REQ to request a ticket encrypted with our own TGT session key
 2. Decrypts the returned ticket to access the PAC
 3. Finds PAC_CREDENTIAL_INFO buffer (only present in PKINIT TGTs)
@@ -309,11 +315,13 @@ principalName := tgt.Client.ToPrincipalName()
 ```
 
 **CCache struct**:
+
 - `Version` - File format version (0x0504 for v4)
 - `DefaultPrincipal` - Default principal in the cache
 - `Credentials` - List of cached credentials
 
 **Credential struct**:
+
 - `Client`, `Server` - Principal structs
 - `Key` - Session key (types.EncryptionKey)
 - `AuthTime`, `StartTime`, `EndTime`, `RenewTill` - Time fields
@@ -363,6 +371,7 @@ reqBytes, err := tgsReq.BuildTGSReq()
 ```
 
 **Features**:
+
 - Automatic UDP/TCP fallback (UDP for small requests, TCP for large)
 - SOCKS5 proxy support
 - 30-second default timeout
@@ -404,6 +413,7 @@ if credBuf != nil {
 ```
 
 **Buffer Types**:
+
 - `PACTypeKerbValidationInfo` (1) - User logon information
 - `PACTypeCredentials` (2) - Encrypted credentials (PKINIT only)
 - `PACTypeServerChecksum` (6) - Server signature
@@ -493,6 +503,7 @@ func main() {
 ## Features
 
 ### gettgtpkinit
+
 - PKINIT Authentication (RFC 4556)
 - PFX/PKCS12 certificate loading
 - Diffie-Hellman key exchange with static AD-compatible parameters
@@ -502,12 +513,14 @@ func main() {
 - SOCKS5 proxy support
 
 ### getnthash
+
 - User-to-User (U2U) TGS request
 - PAC parsing with PAC_CREDENTIAL_INFO extraction
 - AES256 decryption of encrypted credentials
 - NDR structure parsing for NTLM_SUPPLEMENTAL_CREDENTIAL
 
 ### gets4uticket
+
 - S4U2Self (Service-for-User-to-Self) implementation
 - RFC 4757 HMAC-MD5 checksum for PA-FOR-USER
 - Delegation-based impersonation
