@@ -1,13 +1,13 @@
 package main
 
 import (
-"flag"
-"fmt"
-"log"
-"os"
-"strings"
+	"flag"
+	"fmt"
+	"log"
+	"os"
+	"strings"
 
-"github.com/ineffectivecoder/gopkinit/pkg/s4u"
+	"github.com/ineffectivecoder/gopkinit/pkg/s4u"
 )
 
 func main() {

@@ -51,9 +51,9 @@ func (t *TGSRequest) BuildTGSReq() ([]byte, error) {
 	tgsReq.MsgType = msgtype.KRB_TGS_REQ
 	tgsReq.PVNO = 5
 
-	// PA-TGS-REQ (AP-REQ)
+	// PA-TGS-REQ (AP-REQ) - padata type 1 per RFC 4120
 	paTGSReq := types.PAData{
-		PADataType:  2, // PA-TGS-REQ
+		PADataType:  1, // PA-TGS-REQ (was incorrectly 2)
 		PADataValue: apReqBytes,
 	}
 

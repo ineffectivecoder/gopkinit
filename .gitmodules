@@ -1,0 +1,3 @@
+[submodule "gomk"]
+	path = gomk
+	url = https://github.com/mjwhitta/gomk.git
