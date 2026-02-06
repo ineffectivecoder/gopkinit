@@ -233,27 +233,127 @@ asn1.Unmarshal(ticketApp.Bytes, &ticket)
 
 ---
 
+### 🐛 Bug #6: Clock Skew / Time Synchronization (CRITICAL)
+
+**Severity**: CRITICAL - Causes mysterious ASN.1 parse errors  
+**Date Discovered**: Dec 19, 2025
+
+**Symptoms**:
+- Without time sync: `asn1: structure error: explicitly tagged member didn't match`
+- KDC sends error response instead of valid AS-REP
+- Error appears to be ASN.1 parsing but is actually Kerberos protocol rejection
+
+**Root Cause**:
+Kerberos has strict clock skew requirements (typically ±5 minutes). When the client's clock is too far out of sync with the KDC, the KDC either:
+1. Rejects the AS-REQ silently (appears as timeout)
+2. Sends an error response that fails to parse as AS-REP
+
+The Go tool was working correctly, but the KDC was rejecting requests due to time skew.
+
+**Solution**:
+```bash
+# Sync system clock with DC before running tool
+sudo ntpdate <dc-ip>
+
+# Then run gettgtpkinit
+./gettgtpkinit -cert-pfx user.pfx domain.com/user output.ccache
+```
+
+**Result**:
+- ✅ With time sync: Tool works perfectly, TGT obtained
+- ✅ Without time sync: Clear error message
+- ✅ All previous "timeout" and "parse error" issues resolved
+
+**Lesson**: Always check time synchronization first when debugging Kerberos issues!
+
+**Files Modified**: Documentation only (README.md, IMPLEMENTATION_PLAN.md)
+
+---
+
+### 🐛 Bug #7: Issuer DN with domainComponent Attributes (CRITICAL)
+
+**Severity**: CRITICAL - KDC rejects certificates with domainComponent in issuer  
+**Date Discovered**: Dec 19, 2025
+
+**Symptoms**:
+- `KDC returned error: KRB_AP_ERR_BADKEYVER (41)` - "Specified version of key is not available"
+- Python PKINITtools works with same certificate
+- Affects certificates issued by Active Directory Certificate Services (ADCS)
+- Error occurs even with correct time synchronization
+
+**Root Cause**:
+Go's `x509.Certificate.Issuer.ToRDNSequence()` doesn't properly preserve `domainComponent` (DC) attributes in the issuer Distinguished Name. This caused the CMS SignerInfo to have an incomplete issuer DN:
+
+**Incorrect (Go)**:
+```
+IssuerAndSerialNumber {
+  Issuer: CN=rootshell-SENSEI-CA  (32 bytes - WRONG!)
+  Serial: 0x1E000000392DFA2BBB9AF54CAA000000000039
+}
+```
+
+**Correct (Python)**:
+```
+IssuerAndSerialNumber {
+  Issuer: DC=ninja,DC=rootshell,CN=rootshell-SENSEI-CA  (82 bytes)
+  Serial: 0x1E000000392DFA2BBB9AF54CAA000000000039
+}
+```
+
+The KDC validates the CMS signature by looking up the certificate based on the Issuer and SerialNumber. With an incomplete issuer DN, the lookup fails, resulting in error 41.
+
+**Solution**:
+Extract the raw issuer bytes directly from the certificate's DER encoding instead of using the parsed `Issuer` field:
+
+```go
+// Parse the certificate to extract the raw issuer
+var certSeq struct {
+    TBSCertificate struct {
+        Version            int `asn1:\"optional,explicit,default:0,tag:0\"`
+        SerialNumber       *big.Int
+        SignatureAlgorithm asn1.RawValue
+        RawIssuer          asn1.RawValue  // Raw issuer bytes
+    }
+}
+_, err := asn1.Unmarshal(cert.Raw, &certSeq)
+
+sid := IssuerAndSerialNumber{
+    Issuer:       certSeq.TBSCertificate.RawIssuer,  // Use raw bytes!
+    SerialNumber: cert.SerialNumber,
+}
+```
+
+**Result**:
+- ✅ ADCS certificates now work correctly
+- ✅ domainComponent attributes preserved in issuer DN  
+- ✅ KDC successfully validates CMS signature
+- ✅ TGT obtained successfully
+
+**Files Modified**: `pkg/pkinit/cms.go`
+
+---
+
 ## Additional Fixes (AS-REQ Encoding)
 
 Early debugging fixed multiple ASN.1 encoding issues that caused KDC timeout:
 
-### Fix #6: AS-REQ APPLICATION Tag
+### Fix #7: AS-REQ APPLICATION Tag
 - **Issue**: Used CONTEXT tag (0x4a) instead of APPLICATION (0x6a)
 - **Fix**: Manual tag construction with correct class
 
-### Fix #7: Digest Algorithm NULL Parameters
+### Fix #8: Digest Algorithm NULL Parameters
 - **Issue**: SHA1 algorithm missing NULL parameters
 - **Fix**: Added explicit NULL: `300906052b0e03021a0500`
 
-### Fix #8: Signature Algorithm NULL
+### Fix #9: Signature Algorithm NULL
 - **Issue**: RSA algorithm missing NULL parameters  
 - **Fix**: Added NULL to rsaEncryption OID
 
-### Fix #9: DH Public Key Encoding
+### Fix #10: DH Public Key Encoding
 - **Issue**: Raw bytes in BIT STRING
 - **Fix**: Encode as INTEGER first: `02 81 80 <128 bytes>`
 
-### Fix #10: EncapsulatedContentInfo
+### Fix #11: EncapsulatedContentInfo
 - **Issue**: Raw AuthPack bytes
 - **Fix**: Wrap in OCTET STRING: `04 82 01 8a <AuthPack>`
 
@@ -293,9 +393,17 @@ func (c *KDCClient) SendASReq(req []byte) ([]byte, error) {
 
 ## Debugging Journey Summary (RESOLVED)
 
-### Phase 1: KDC Timeout (Bugs #6-10) - ✅ RESOLVED
+### Phase 0: Time Synchronization (Bug #6) - ✅ RESOLVED
+- **Duration**: Dec 19, 2025
+- **Problem**: Intermittent KDC timeouts and ASN.1 parse errors
+- **Method**: Noticed Python tool worked, traced difference to `ntpdate` execution
+- **Result**: Clock skew was causing KDC rejection
+- **Status**: Fixed by requiring time sync before execution
+- **Impact**: This was the root cause of many mysterious "timeout" errors
+
+### Phase 1: KDC Timeout (Bugs #7-11) - ✅ RESOLVED
 - **Duration**: Early implementation
-- **Problem**: KDC accepted connection but no response
+- **Problem**: KDC accepted connection but no response (after time sync)
 - **Method**: Byte-by-byte comparison with Python
 - **Result**: Fixed 5 ASN.1 encoding issues
 - **Status**: All ASN.1 IMPLICIT tag issues resolved

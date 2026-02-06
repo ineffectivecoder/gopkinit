@@ -65,7 +65,8 @@ The AuthPack contains:
 This is signed with the client's certificate using CMS/PKCS7:
 
 ```go
-signedAuthPack := cms.Sign(authPackBytes, certificate, privateKey)
+// SignAuthPack(data, cert, privateKey, wrapInContentInfo)
+signedAuthPack, err := SignAuthPack(authPackBytes, certificate, privateKey, true)
 ```
 
 ### 3. Shared Secret Derivation
@@ -80,8 +81,8 @@ sharedSecret := new(big.Int).Exp(kdcPublicKey, clientPrivateKey, dhPrime)
 // big.Int.Bytes() strips leading zeros!
 paddedSecret := zeroPad(sharedSecret.Bytes(), 128)
 
-// Derive key using RFC 3961 key derivation
-sessionKey := deriveKey(paddedSecret, serverNonce, clientNonce)
+// Derive key using octetstring2key from gokrb5
+sessionKey := etype.DeriveKey(paddedSecret, usage)
 ```
 
 ### 4. AS-REP Key
@@ -89,15 +90,16 @@ sessionKey := deriveKey(paddedSecret, serverNonce, clientNonce)
 The AS-REP encryption key is derived from the DH shared secret and is needed later for `getnthash`:
 
 ```go
-// This key decrypts PAC_CREDENTIAL_INFO in the TGT
-asRepKey := sha256(sharedSecret || nonces)
+// truncateKey: iterative SHA1 hash-and-concatenate, then truncate to key size
+// SHA1(0x00 || value) || SHA1(0x01 || value) || ... truncated to keySize
+asRepKey := truncateKey(sharedSecret, keySize)
 ```
 
 ## Common Errors
 
 | Error | Cause | Solution |
 |-------|-------|----------|
-| `KRB5KDC_ERR_PREAUTH_FAILED` | Certificate not trusted | Ensure CA is in NTAuth store |
+| `KDC_ERR_PREAUTH_FAILED` | Certificate not trusted | Ensure CA is in NTAuth store |
 | `KDC_ERR_CLIENT_NOT_TRUSTED` | Certificate revoked/expired | Check certificate validity |
 | `Clock skew too great` | Time not synchronized | Run `ntpdate <dc-ip>` |
 | `KDC_ERR_C_PRINCIPAL_UNKNOWN` | Wrong username | Username must match certificate UPN/SAN |

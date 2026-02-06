@@ -6,7 +6,7 @@
 
 ## Experimental Go PKINIT and Kerberos offensive tooling
 
-The code in this repo functions, but much of it was AI generated. Please review and verify before using in production. This was implemented as a learning excercise and may contain bugs or security issues.
+The code in this repo functions, but much of it was AI generated. Please review and verify before using in production. This was implemented as a learning exercise and may contain bugs or security issues.
 
 A complete Go implementation of PKINIT (Public Key Cryptography for Initial Authentication in Kerberos) and related attack tools for Active Directory security testing.
 
@@ -34,6 +34,11 @@ For detailed protocol explanations and implementation deep dives, see the [docs]
 # Clone and build all tools
 git clone <repo>
 cd gopkinit
+
+# Using Makefile (recommended)
+make
+
+# Or build individually
 go build -o gettgtpkinit ./cmd/gettgtpkinit
 go build -o getnthash ./cmd/getnthash
 go build -o gets4uticket ./cmd/gets4uticket
@@ -550,7 +555,8 @@ gopkinit/
 │   │   ├── authpack.go   # RFC 4556 ASN.1 structures
 │   │   ├── cms.go        # CMS/PKCS7 signing
 │   │   ├── asreq.go      # AS-REQ builder
-│   │   └── asrep.go      # AS-REP decryption
+│   │   ├── asrep.go      # AS-REP decryption
+│   │   └── manual_decrypt.go  # AES-CTS fallback decryption
 │   ├── krb/              # Kerberos network client
 │   │   ├── client.go     # KDC communication (TCP/UDP/SOCKS5)
 │   │   └── tgs.go        # TGS-REQ/TGS-REP handling
@@ -604,18 +610,16 @@ The U2U implementation extracts NT hashes from PKINIT TGTs:
 
 ## Dependencies
 
-```go
-require (
-    github.com/jcmturner/gokrb5/v8           // Kerberos structures
-    software.sslmate.com/src/go-pkcs12       // PKCS12 parsing
-    golang.org/x/net/proxy                   // SOCKS5 support
-    golang.org/x/crypto                      // Crypto primitives
-)
-```
+- [gokrb5/v8](https://github.com/jcmturner/gokrb5) — Kerberos protocol structures and crypto
+- [go-pkcs12](https://pkg.go.dev/software.sslmate.com/src/go-pkcs12) — PKCS12/PFX certificate parsing
+- [golang.org/x/net](https://pkg.go.dev/golang.org/x/net/proxy) — SOCKS5 proxy support
+- [golang.org/x/crypto](https://pkg.go.dev/golang.org/x/crypto) — Cryptographic primitives
 
 ## Known Limitations
 
 - PEM certificate format not yet supported (use PFX)
+- RSA keys only — ECDSA certificates will fail during CMS signing
+- SHA1-only digest in CMS signatures (newer AD deployments may require SHA256)
 - RC4 encryption not supported (AES256/AES128 only)
 - No smart card/hardware token support
 - S4U2Proxy not yet implemented
@@ -632,4 +636,4 @@ require (
 
 ## License
 
-Based on PKINITtools by Dirk-jan Mollema (@_dirkjan) and minikerberos by Tamas Jos (@skelsec).
+MIT License. Based on [PKINITtools](https://github.com/dirkjanm/PKINITtools) by Dirk-jan Mollema (@_dirkjan) and [minikerberos](https://github.com/skelsec/minikerberos) by Tamas Jos (@skelsec).

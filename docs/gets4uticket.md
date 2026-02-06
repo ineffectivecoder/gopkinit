@@ -81,7 +81,10 @@ func computeKerbHMACMD5(key []byte, keyusage uint32, data []byte) []byte {
     // Step 2: MD5(usage_str || data)
     usageBytes := make([]byte, 4)
     binary.LittleEndian.PutUint32(usageBytes, keyusage)
-    md5Hash := md5.Sum(append(usageBytes, data...))
+    md5Writer := md5.New()
+    md5Writer.Write(usageBytes)
+    md5Writer.Write(data)
+    md5Hash := md5Writer.Sum(nil)
     
     // Step 3: HMAC-MD5(ksign, md5hash)
     finalHmac := hmac.New(md5.New, ksign.Sum(nil))
@@ -94,7 +97,7 @@ Key usage **17** is used for S4U2Self.
 
 ### 4. ASN.1 GeneralString Encoding
 
-Kerberos requires GeneralString (tag 0x1b), but Go's `asn1` package uses PrintableString (tag 0x13). Manual encoding is required:
+Kerberos requires GeneralString (tag 0x1b), but Go's `encoding/asn1` package encodes strings as UTF8String (tag 0x0c) by default. Manual encoding is required:
 
 ```go
 // Custom ASN.1 encoding with GeneralString tags

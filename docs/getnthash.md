@@ -52,17 +52,17 @@ The NT hash is encrypted in `PAC_CREDENTIAL_INFO` using a key derived from the P
 U2U requests a service ticket encrypted with our own TGT session key:
 
 ```go
-// Request ticket to ourselves
-tgsReq := messages.NewUser2UserTGSReq(
-    clientPrincipal,
-    realm,
-    config,
-    tgt,           // Our TGT
-    sessionKey,    // TGT session key
-    clientPrincipal, // Request ticket to ourselves
-    false,         // Not renewal
-    tgt,           // Additional ticket (same TGT)
-)
+// Build TGS-REQ manually with enc-tkt-in-skey flag
+tgsReq := &krb.TGSRequest{
+    Realm:      realm,
+    CName:      clientPrincipal,
+    TGT:        tgt,             // Our TGT
+    SessionKey: sessionKey,      // TGT session key
+    SName:      clientPrincipal, // Request ticket to ourselves
+    SRealm:     realm,
+}
+// The additional-ticket (our TGT) is included so the KDC encrypts
+// the service ticket with our session key instead of the krbtgt key
 ```
 
 ### 2. PAC Structure
@@ -105,7 +105,7 @@ type PAC_CREDENTIAL_DATA struct {
 
 type NTLM_SUPPLEMENTAL_CREDENTIAL struct {
     Version    uint32     // 0
-    Flags      uint32     // 0x00000001 = NT hash present
+    Flags      uint32
     LMPassword [16]byte   // Usually zeros
     NTPassword [16]byte   // The NT hash we want!
 }
@@ -124,9 +124,6 @@ type NTLM_SUPPLEMENTAL_CREDENTIAL struct {
 ```bash
 # Extract NT hash from PKINIT TGT
 ./getnthash -ccache user.ccache -key <asrep-key> -dc-ip 10.0.0.1
-
-# Verbose output
-./getnthash -ccache user.ccache -key <asrep-key> -dc-ip 10.0.0.1 -v
 ```
 
 ## Output

