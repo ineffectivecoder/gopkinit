@@ -6,7 +6,7 @@
 
 ## Experimental Go PKINIT and Kerberos offensive tooling
 
-This code in this repo functions, but much of it was AI generated. Please review and verify before using in production. This was implemented as a learning excercise and may contain bugs or security issues.
+The code in this repo functions, but much of it was AI generated. Please review and verify before using in production. This was implemented as a learning excercise and may contain bugs or security issues.
 
 A complete Go implementation of PKINIT (Public Key Cryptography for Initial Authentication in Kerberos) and related attack tools for Active Directory security testing.
 
