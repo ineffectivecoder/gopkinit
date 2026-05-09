@@ -32,10 +32,44 @@ type TGSRequest struct {
 	Till          time.Time
 }
 
-// BuildTGSReq constructs a TGS-REQ message
+// BuildTGSReq constructs a TGS-REQ message.
+// The request body is built first and shared with the authenticator checksum
+// per RFC 4120 §5.5.1 — the checksum MUST be over the exact bytes that appear
+// in the KDC-REQ-BODY of the outer TGS-REQ.
 func (t *TGSRequest) BuildTGSReq() ([]byte, error) {
-	// Build AP-REQ for PA-TGS-REQ
-	apReq, err := t.buildAPReq()
+	// Build the request body ONCE — shared between TGS-REQ and authenticator checksum
+	reqBody := t.buildReqBody()
+
+	// Marshal the body so we can checksum it
+	bodyBytes, err := reqBody.Marshal()
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal req body: %w", err)
+	}
+
+	// Get etype for crypto operations
+	etype, err := crypto.GetEtype(t.SessionKey.KeyType)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get etype: %w", err)
+	}
+
+	// Compute checksum over request body (key usage 6)
+	checksumBytes, err := etype.GetChecksumHash(t.SessionKey.KeyValue, bodyBytes, uint32(keyusage.TGS_REQ_PA_TGS_REQ_AP_REQ_AUTHENTICATOR_CHKSUM))
+	if err != nil {
+		return nil, fmt.Errorf("failed to compute checksum: %w", err)
+	}
+
+	// Build authenticator with checksum — mirrors gokrb5's setPAData()
+	auth, err := types.NewAuthenticator(t.Realm, t.CName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create authenticator: %w", err)
+	}
+	auth.Cksum = types.Checksum{
+		CksumType: etype.GetHashID(),
+		Checksum:  checksumBytes,
+	}
+
+	// Build AP-REQ using gokrb5's NewAPReq (handles encryption correctly)
+	apReq, err := messages.NewAPReq(t.TGT, t.SessionKey, auth)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build AP-REQ: %w", err)
 	}
@@ -47,65 +81,19 @@ func (t *TGSRequest) BuildTGSReq() ([]byte, error) {
 
 	// Build TGS-REQ
 	tgsReq := messages.TGSReq{}
-	tgsReq.ReqBody = t.buildReqBody()
+	tgsReq.ReqBody = reqBody
 	tgsReq.MsgType = msgtype.KRB_TGS_REQ
 	tgsReq.PVNO = 5
 
 	// PA-TGS-REQ (AP-REQ) - padata type 1 per RFC 4120
 	paTGSReq := types.PAData{
-		PADataType:  1, // PA-TGS-REQ (was incorrectly 2)
+		PADataType:  1,
 		PADataValue: apReqBytes,
 	}
 
 	tgsReq.PAData = append([]types.PAData{paTGSReq}, t.PAData...)
 
 	return tgsReq.Marshal()
-}
-
-// buildAPReq constructs an AP-REQ for the TGS-REQ
-func (t *TGSRequest) buildAPReq() (messages.APReq, error) {
-	apReq := messages.APReq{
-		PVNO:    5,
-		MsgType: msgtype.KRB_AP_REQ,
-		Ticket:  t.TGT,
-	}
-
-	// AP options (none for TGS-REQ typically)
-	apReq.APOptions = types.NewKrbFlags()
-
-	// Build authenticator
-	auth := types.Authenticator{
-		AVNO:   5,
-		CRealm: t.Realm,
-		CName:  t.CName,
-		CTime:  time.Now().UTC(),
-		Cusec:  time.Now().Nanosecond() / 1000,
-	}
-
-	// Marshal authenticator
-	authBytes, err := auth.Marshal()
-	if err != nil {
-		return apReq, fmt.Errorf("failed to marshal authenticator: %w", err)
-	}
-
-	// Encrypt authenticator with session key
-	etype, err := crypto.GetEtype(t.SessionKey.KeyType)
-	if err != nil {
-		return apReq, fmt.Errorf("failed to get etype: %w", err)
-	}
-
-	// Key usage 7: TGS-REQ PA-TGS-REQ AP-REQ Authenticator
-	encAuth, _, err := etype.EncryptMessage(t.SessionKey.KeyValue, authBytes, uint32(keyusage.TGS_REQ_PA_TGS_REQ_AP_REQ_AUTHENTICATOR))
-	if err != nil {
-		return apReq, fmt.Errorf("failed to encrypt authenticator: %w", err)
-	}
-
-	apReq.EncryptedAuthenticator = types.EncryptedData{
-		EType:  t.SessionKey.KeyType,
-		Cipher: encAuth,
-	}
-
-	return apReq, nil
 }
 
 // buildReqBody constructs the TGS-REQ body
@@ -173,8 +161,7 @@ func (c *KDCClient) SendTGSReq(req []byte) ([]byte, error) {
 func ParseTGSRep(data []byte) (*messages.TGSRep, error) {
 	var tgsRep messages.TGSRep
 	if err := tgsRep.Unmarshal(data); err != nil {
-		// Check if this might be a KRB-ERROR instead
-		// Error code 16 in S4U2Self context typically means delegation not enabled
+		// Check if this might be a KRB-Error instead
 		if strings.Contains(err.Error(), "KDC_ERR_PADATA_TYPE_NOSUPP") || strings.Contains(err.Error(), "(16)") {
 			return nil, fmt.Errorf("S4U2Self failed - the account may not have delegation enabled, or the target user may not be delegatable: %w", err)
 		}
